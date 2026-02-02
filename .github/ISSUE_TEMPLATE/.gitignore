@@ -1,0 +1,21 @@
+cat > .gitignore << 'EOF'
+# VSCode
+.vscode/
+*.code-workspace
+
+# Python
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+EOF
