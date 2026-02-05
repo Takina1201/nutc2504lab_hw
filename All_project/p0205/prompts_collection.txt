@@ -1,0 +1,79 @@
+================================================================================
+File: ch6-3.py (Human-in-the-loop Order System)
+================================================================================
+
+[Node: extract_order_data (Tool Docstring)]
+Description:
+資料提取專用工具。
+專門用於從非結構化文本中提取訂單相關資訊（姓名、電話、商品、數量、地址）。
+
+[Node: human_review_node (Manual Review Logic)]
+System/AI Message (Auto-generated during review):
+"已收到訂單資料，因偵測到 VIP 客戶，系統將轉交人工審核..."
+"已收到訂單資料，等待人工審核結果..."
+
+Human Message (Injected by System):
+"[系統公告] 管理員已人工審核通過此 VIP 訂單，請繼續完成後續動作。"
+"[系統公告] 管理員拒絕了此訂單，請取消交易並告知用戶。"
+
+
+================================================================================
+File: ch6-2.py (Translation with Reflection)
+================================================================================
+
+[Node: translator_node]
+User Prompt (Initial):
+f"你是一名翻譯員，請將以下中文翻譯成英文，不須任何解釋: '{state['original_text']}'"
+
+User Prompt (Retry with Critique):
+f"你是一名翻譯員，請將以下中文翻譯成英文，不須任何解釋: '{state['original_text']}'\n\n上一輪的審查意見是: {state['critique']}。請根據意見修正翻譯。"
+
+[Node: reflector_node]
+User Prompt (Critique Instruction):
+f"""
+你是一個嚴格的翻譯審查員。
+原文: {state['original_text']}
+翻譯: {state['translated_text']}
+
+請檢查翻譯是否準確且通順。
+- 如果翻譯很完美，請只回覆 "PASS"。
+- 如果需要修改，請給出簡短的具體建議。
+"""
+
+
+================================================================================
+File: ch6-1.py (Weather Bot with Fallback)
+================================================================================
+
+[Node: get_weather (Tool Docstring)]
+Description:
+查詢指定城市的天氣。
+
+[Node: fallback_node]
+Tool Message (System Injection):
+"系統警示：已達到最大重試次數 (Max Retries Reached)。請停止嘗試，並告知使用者服務暫時無法使用。"
+
+
+================================================================================
+File: ch7-1.py (Translation with Cache)
+================================================================================
+
+[Node: translator_node]
+User Prompt (Initial):
+f"你是一名翻譯員，請將以下中文翻譯成英文，不須任何解釋: '{state['original_text']}'"
+
+User Prompt (Retry):
+f"你是一名翻譯員，請將以下中文翻譯成英文，不須任何解釋: '{state['original_text']}'\n\n上一輪的審查意見是: {state['critique']}。請根據意見修正翻譯。"
+
+[Node: reflector_node]
+User Prompt:
+f"原文: {state['original_text']}\n翻譯: {state['translated_text']}\n請檢查翻譯是否準確。若完美請回覆 PASS，否則給出簡短建議。"
+
+
+================================================================================
+File: ch7-2.py (Fast/Slow Track Router)
+================================================================================
+
+[Node: expert_node]
+User Prompt:
+f"請以專業的角度回答以下問題: {state['question']}"
