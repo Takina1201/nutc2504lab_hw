@@ -1,0 +1,7 @@
+﻿conversation_id,questions_id,questions,answer,source
+1,1,Google Cloud 的 N4A 虛擬機器有什麼特色？,N4A 是 Google Cloud 採用自行研發 Arm 架構 Axion 處理器的一般用途虛擬機器。它提供比 x86 架構虛擬機器高兩倍的性價比，能源效率提升 80%。適合微服務、資料分析等工作負載。,data_04.txt
+1,2,它跟上一代的 C4A 有什麼不同？,C4A 是裸機運算服務 (C4A metal)，專為需要實體伺服器的特殊工作負載（如 Android 開發、自駕車系統）設計；而 N4A 是虛擬機器系列，針對一般用途如網站服務、資料庫等，且 N4A 是 Axion 處理器的第二批產品。,data_04.txt
+1,3,那目前可以在哪些地區使用這個服務？,"N4A 目前已擴及多個區域，包括美國的 us-central1, us-east4, us-east1, us-west1，歐洲的 europe-west3, europe-west4, europe-west1, europe-west2，以及亞洲的 asia-southeast1 (新加坡)。",data_04.txt
+2,1,最近去日本旅遊天氣要注意什麼？,最近日本天氣非常冷，甚至常下大雪。預報顯示 2 月 7 日至 9 日會有強冷空氣，可能出現強風、降雪或暴風雪。,data_03.txt
+2,2,那邊現在有流感疫情嗎？,有的，日本目前正經歷秋冬的第二波流感流行。病例數連續增加，且這波流行除了 A 型 H3N2 之外，B 型流感的佔比也明顯增加（約佔 26%）。,data_03.txt
+2,3,東京的情況嚴重嗎？,東京周邊縣份的流感病例又出現在榜單上，目前流行的區域包括八王子市、町田市、中野區、豐島區、北區、荒川區與江東區。,data_03.txt
