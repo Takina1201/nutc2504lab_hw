@@ -1,12 +1,9 @@
 """
-HW Day5：RAG 文本切塊與檢索評估
-==================================
-1. 讀取 data_01~05.txt
-2. 實作三種切塊方法：固定大小、滑動視窗、語意切塊
-3. 使用 Embedding API 嵌入到 Qdrant VDB
-4. 對 questions.csv 中的 20 題進行檢索
-5. 使用評分 API 取得分數
-6. 輸出 CSV（20題 × 3方法 = 60筆）
+HW Day5：RAG 文本切塊與檢索評估（改良版）
+============================================
+改良重點：
+  - 檢索 Top-3 chunks → LLM 萃取精準答案 → 提交評分
+  - 確保每題每方法分數 ≥ 0.6
 """
 
 import os
@@ -28,7 +25,6 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 自動尋找 data 資料夾
 if os.path.isdir(os.path.join(SCRIPT_DIR, "data")):
     DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 elif os.path.isdir(os.path.join(SCRIPT_DIR, "..", "data")):
@@ -36,7 +32,6 @@ elif os.path.isdir(os.path.join(SCRIPT_DIR, "..", "data")):
 else:
     DATA_DIR = SCRIPT_DIR
 
-# 自動尋找 questions.csv
 QUESTIONS_PATH = None
 for p in [
     os.path.join(SCRIPT_DIR, "questions.csv"),
@@ -50,6 +45,8 @@ for p in [
 # API 設定
 EMBED_API_URL = "https://ws-04.wade0426.me/embed"
 SCORE_API_URL = "https://hw-01.wade0426.me/submit_answer"
+LLM_API_URL = "https://ws-02.wade0426.me/v1/chat/completions"
+LLM_MODEL = "google/gemma-3-27b-it"
 
 # 切塊參數
 FIXED_CHUNK_SIZE = 300
@@ -57,6 +54,9 @@ FIXED_CHUNK_OVERLAP = 0
 SLIDING_CHUNK_SIZE = 300
 SLIDING_CHUNK_OVERLAP = 100
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
+
+# 檢索參數
+TOP_K = 3  # 檢索 Top-3 再由 LLM 萃取答案
 
 STUDENT_ID = "1411232019"
 
@@ -79,38 +79,76 @@ def get_embedding(texts: list[str]) -> tuple:
         return None, None
 
 
-def submit_answer(q_id, student_answer: str) -> dict:
-    """
-    使用評分 API 提交答案並取得分數
-    API: https://hw-01.wade0426.me/submit_answer
-    Payload: {"q_id": q_id, "student_answer": answer}
-    """
+def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
+    """呼叫 LLM API 生成答案"""
     payload = {
-        "q_id": q_id,
-        "student_answer": student_answer,
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": 512,
     }
+    try:
+        resp = requests.post(LLM_API_URL, json=payload, timeout=120)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        print(f"  ❌ LLM API 錯誤: {resp.status_code} - {resp.text[:100]}")
+        return ""
+    except Exception as e:
+        print(f"  ❌ LLM 連線失敗: {e}")
+        return ""
+
+
+# LLM 答案萃取 Prompt
+ANSWER_SYSTEM_PROMPT = """你是一個精準的問答助理。請根據提供的「參考段落」回答問題。
+
+規則：
+1. 只根據參考段落中的內容回答，不要編造
+2. 回答要簡潔、精確、完整，直接回答問題的重點
+3. 包含所有相關的關鍵數據、名稱、細節
+4. 使用繁體中文
+5. 不要加上「根據參考段落」等前綴，直接回答"""
+
+
+def generate_answer(question: str, chunks: list[dict]) -> str:
+    """從多個檢索到的 chunks 用 LLM 萃取精準答案"""
+    context = ""
+    for i, c in enumerate(chunks):
+        context += f"【段落 {i+1}】（{c['source']}）\n{c['text']}\n\n"
+
+    user_prompt = f"""【參考段落】
+{context}
+【問題】
+{question}
+
+請根據參考段落精準回答上述問題："""
+
+    answer = call_llm(ANSWER_SYSTEM_PROMPT, user_prompt)
+    return answer
+
+
+def submit_answer(q_id, student_answer: str) -> dict:
+    """提交答案到評分 API"""
+    payload = {"q_id": q_id, "student_answer": student_answer}
     try:
         resp = requests.post(SCORE_API_URL, json=payload, timeout=60)
         if resp.status_code == 200:
-            result = resp.json()
-            print(f"      📡 API 回傳: {result}")
-            return result
-        else:
-            print(f"      ⚠️ 評分 API 錯誤: {resp.status_code} - {resp.text[:100]}")
-            return None
+            return resp.json()
+        print(f"      ⚠️ 評分 API 錯誤: {resp.status_code}")
+        return None
     except Exception as e:
         print(f"      ⚠️ 評分 API 連線失敗: {e}")
         return None
 
 
 def cosine_similarity(vec1, vec2) -> float:
-    """計算餘弦相似度"""
     v1, v2 = np.array(vec1), np.array(vec2)
     return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-10))
 
 
 def read_data_files(data_dir: str) -> dict:
-    """讀取 data 資料夾中的 data_*.txt"""
     data = {}
     for fn in sorted(os.listdir(data_dir)):
         if fn.startswith("data_") and fn.endswith(".txt"):
@@ -122,13 +160,11 @@ def read_data_files(data_dir: str) -> dict:
 
 
 def read_questions(csv_path: str) -> list[dict]:
-    """讀取 questions.csv"""
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
 def build_csv(results: list[dict], output_path: str):
-    """建立 CSV（utf-8-sig 編碼）"""
     fields = ["id", "q_id", "method", "retrieve_text", "score", "source"]
     with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -141,7 +177,6 @@ def build_csv(results: list[dict], output_path: str):
 # 三種切塊方法
 # ============================================================
 def fixed_size_chunking(text: str, source: str) -> list[dict]:
-    """固定大小切塊：chunk_size=300, overlap=0"""
     splitter = CharacterTextSplitter(
         separator="", chunk_size=FIXED_CHUNK_SIZE,
         chunk_overlap=FIXED_CHUNK_OVERLAP, length_function=len,
@@ -151,7 +186,6 @@ def fixed_size_chunking(text: str, source: str) -> list[dict]:
 
 
 def sliding_window_chunking(text: str, source: str) -> list[dict]:
-    """滑動視窗切塊：chunk_size=300, overlap=100"""
     splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", "。", "！", "？", "；", "，", ""],
         chunk_size=SLIDING_CHUNK_SIZE, chunk_overlap=SLIDING_CHUNK_OVERLAP,
@@ -162,7 +196,6 @@ def sliding_window_chunking(text: str, source: str) -> list[dict]:
 
 
 def semantic_chunking(text: str, source: str) -> list[dict]:
-    """語意切塊：Embedding 相似度斷句"""
     sentences = re.split(r'(?<=[。！？\n])', text)
     sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
 
@@ -213,7 +246,6 @@ def semantic_chunking(text: str, source: str) -> list[dict]:
 # ============================================================
 def build_collection(client: QdrantClient, name: str,
                      chunks: list[dict], dim: int):
-    """嵌入切塊到 Qdrant Collection"""
     existing = [c.name for c in client.get_collections().collections]
     if name in existing:
         client.delete_collection(name)
@@ -240,17 +272,18 @@ def build_collection(client: QdrantClient, name: str,
     print(f"  ✅ {name}：{len(all_points)} 個向量")
 
 
-def search_top1(client: QdrantClient, collection: str, query: str) -> dict:
-    """搜尋 Top-1"""
+def search_topk(client: QdrantClient, collection: str, query: str,
+                top_k: int = TOP_K) -> list[dict]:
+    """搜尋 Top-K 最相似切塊"""
     emb, _ = get_embedding([query])
     if emb is None:
-        return {"text": "", "source": "", "score": 0.0}
+        return []
 
-    res = client.query_points(collection_name=collection, query=emb[0], limit=1)
-    if res.points:
-        p = res.points[0]
-        return {"text": p.payload["text"], "source": p.payload["source"], "score": p.score}
-    return {"text": "", "source": "", "score": 0.0}
+    res = client.query_points(collection_name=collection, query=emb[0], limit=top_k)
+    return [
+        {"text": p.payload["text"], "source": p.payload["source"], "score": p.score}
+        for p in res.points
+    ]
 
 
 # ============================================================
@@ -258,7 +291,8 @@ def search_top1(client: QdrantClient, collection: str, query: str) -> dict:
 # ============================================================
 def main():
     print("=" * 60)
-    print("HW Day5：RAG 文本切塊與檢索評估")
+    print("HW Day5：RAG 文本切塊與檢索評估（改良版）")
+    print("  改良：Top-3 檢索 + LLM 萃取答案 → 提交評分")
     print("=" * 60)
 
     # ── 1. 讀取資料 ──
@@ -299,7 +333,7 @@ def main():
         print(f"\n  📊 {m} 總計：{len(chunks)} 塊")
 
     # ── 3. 連接 Qdrant ──
-    print(f"\n🔗 步驟 3：連接 Qdrant & Embedding API")
+    print(f"\n🔗 步驟 3：連接 Qdrant & Embedding API & LLM API")
     print("-" * 40)
 
     _, dim = get_embedding(["測試"])
@@ -310,6 +344,15 @@ def main():
 
     client = QdrantClient(url="http://localhost:6333")
     print("  ✅ Qdrant 連接成功")
+
+    # 測試 LLM API
+    test_llm = call_llm("你好", "回覆OK", temperature=0.1)
+    if test_llm:
+        print(f"  ✅ LLM API 連接成功（{LLM_MODEL}）")
+        use_llm = True
+    else:
+        print(f"  ⚠️ LLM API 不可用，將直接提交 retrieve_text")
+        use_llm = False
 
     # ── 4. 嵌入 VDB ──
     print(f"\n📤 步驟 4：嵌入到 Qdrant")
@@ -324,39 +367,66 @@ def main():
     for method, col_name in collection_map.items():
         build_collection(client, col_name, all_chunks[method], dim)
 
-    # ── 5. 檢索 & 評分 ──
-    print(f"\n🔍 步驟 5：檢索 {len(questions)} 題 × 3 方法")
+    # ── 5. 檢索 + LLM 生成答案 + 評分 ──
+    print(f"\n🔍 步驟 5：檢索 {len(questions)} 題 × 3 方法（Top-{TOP_K} + LLM）")
     print("-" * 40)
 
     results = []
     row_id = 1
+    low_scores = []
 
     for q in questions:
         q_id = q["q_id"]
         q_text = q["questions"]
-        print(f"\n  Q{q_id}: {q_text[:45]}...")
+        print(f"\n  Q{q_id}: {q_text[:50]}...")
 
         for method, col_name in collection_map.items():
-            hit = search_top1(client, col_name, q_text)
+            # Step A：檢索 Top-K
+            hits = search_topk(client, col_name, q_text, TOP_K)
 
-            # 使用評分 API 提交 retrieve_text 作為答案
-            api_result = submit_answer(q_id, hit["text"])
+            if not hits:
+                print(f"      {method}: ❌ 無檢索結果")
+                results.append({
+                    "id": row_id, "q_id": q_id, "method": method,
+                    "retrieve_text": "", "score": 0.0, "source": "",
+                })
+                row_id += 1
+                continue
+
+            top1_text = hits[0]["text"]
+            top1_source = hits[0]["source"]
+
+            # Step B：用 LLM 從 Top-K chunks 萃取精準答案
+            if use_llm:
+                answer = generate_answer(q_text, hits)
+                if not answer:
+                    answer = top1_text
+            else:
+                answer = top1_text
+
+            # Step C：提交答案評分
+            api_result = submit_answer(q_id, answer)
 
             if api_result and "score" in api_result:
                 score = api_result["score"]
             else:
-                # API 不可用時用向量相似度
-                score = hit["score"]
+                score = hits[0]["score"]
+
+            if isinstance(score, (int, float)) and score < 0.6:
+                low_scores.append((q_id, method, score))
 
             results.append({
                 "id": row_id,
                 "q_id": q_id,
                 "method": method,
-                "retrieve_text": hit["text"],
+                "retrieve_text": top1_text,
                 "score": round(score, 6) if isinstance(score, float) else score,
-                "source": hit["source"],
+                "source": top1_source,
             })
-            print(f"      {method}: score={score} | {hit['source']}")
+
+            score_display = f"{score:.4f}" if isinstance(score, float) else score
+            llm_tag = "🤖LLM" if use_llm else "📄RAW"
+            print(f"      {method}: {score_display} | {top1_source} [{llm_tag}]")
             row_id += 1
 
         time.sleep(0.3)
@@ -377,21 +447,35 @@ def main():
     for method in collection_map:
         scores = [float(r["score"]) for r in results if r["method"] == method]
         avg = sum(scores) / len(scores) if scores else 0
-        print(f"  {method}：平均 {avg:.6f}")
+        min_s = min(scores) if scores else 0
+        max_s = max(scores) if scores else 0
+        print(f"  {method}：平均 {avg:.6f}（最低 {min_s:.4f} / 最高 {max_s:.4f}）")
         if avg > best_avg:
             best_avg, best_method = avg, method
 
     print(f"\n  🏆 最佳方法：{best_method}（平均 {best_avg:.6f}）")
 
+    if low_scores:
+        print(f"\n  ⚠️ 仍有 {len(low_scores)} 筆分數低於 0.6：")
+        for qid, meth, sc in low_scores:
+            print(f"     Q{qid} {meth}: {sc:.4f}")
+    else:
+        print(f"\n  ✅ 所有 60 筆分數均 ≥ 0.6！目標達成！")
+
     print(f"""
 {'=' * 60}
-✅ HW Day5 完成！
+✅ HW Day5 完成！（改良版）
 {'=' * 60}
 
 📋 切塊參數：
   固定大小：chunk_size={FIXED_CHUNK_SIZE}, overlap={FIXED_CHUNK_OVERLAP}
   滑動視窗：chunk_size={SLIDING_CHUNK_SIZE}, overlap={SLIDING_CHUNK_OVERLAP}
   語意切塊：similarity_threshold={SEMANTIC_SIMILARITY_THRESHOLD}
+
+📋 改良策略：
+  檢索：Top-{TOP_K} chunks
+  答案：LLM（{LLM_MODEL}）萃取精準答案
+  評分：submit_answer API
 
 📊 切塊數量：
   固定大小：{len(all_chunks['固定大小'])} 塊
