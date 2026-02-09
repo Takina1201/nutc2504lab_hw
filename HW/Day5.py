@@ -5,7 +5,7 @@ HW Day5：RAG 文本切塊與檢索評估
 2. 實作三種切塊方法：固定大小、滑動視窗、語意切塊
 3. 使用 Embedding API 嵌入到 Qdrant VDB
 4. 對 questions.csv 中的 20 題進行檢索
-5. 使用 API 取得分數
+5. 使用評分 API 取得分數
 6. 輸出 CSV（20題 × 3方法 = 60筆）
 """
 
@@ -28,7 +28,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 自動尋找 data 資料夾（支援多種目錄結構）
+# 自動尋找 data 資料夾
 if os.path.isdir(os.path.join(SCRIPT_DIR, "data")):
     DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 elif os.path.isdir(os.path.join(SCRIPT_DIR, "..", "data")):
@@ -49,8 +49,7 @@ for p in [
 
 # API 設定
 EMBED_API_URL = "https://ws-04.wade0426.me/embed"
-# TODO: 請根據 API 說明文件確認評分 API 的 URL 和 Payload 格式
-SCORE_API_URL = "https://ws-04.wade0426.me/score"
+SCORE_API_URL = "https://hw-01.wade0426.me/submit_answer"
 
 # 切塊參數
 FIXED_CHUNK_SIZE = 300
@@ -59,14 +58,14 @@ SLIDING_CHUNK_SIZE = 300
 SLIDING_CHUNK_OVERLAP = 100
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
 
-STUDENT_ID = "1411232019"  # TODO: 請填入你的學號
+STUDENT_ID = "1411232019"
 
 
 # ============================================================
 # 工具函數
 # ============================================================
 def get_embedding(texts: list[str]) -> tuple:
-    """使用 Embedding API 取得文本向量，回傳 (embeddings, dimension)"""
+    """使用 Embedding API 取得文本向量"""
     data = {"texts": texts, "normalize": True, "batch_size": 32}
     try:
         resp = requests.post(EMBED_API_URL, json=data, timeout=60)
@@ -80,23 +79,27 @@ def get_embedding(texts: list[str]) -> tuple:
         return None, None
 
 
-def get_score_from_api(question: str, retrieve_text: str, source: str):
+def submit_answer(q_id, student_answer: str) -> dict:
     """
-    使用評分 API 取得分數
-    TODO: 請根據 API 說明文件調整 URL 和 payload 格式
-    如果 API 不可用，回傳 None（將改用向量相似度）
+    使用評分 API 提交答案並取得分數
+    API: https://hw-01.wade0426.me/submit_answer
+    Payload: {"q_id": q_id, "student_answer": answer}
     """
     payload = {
-        "question": question,
-        "retrieve_text": retrieve_text,
-        "source": source,
+        "q_id": q_id,
+        "student_answer": student_answer,
     }
     try:
         resp = requests.post(SCORE_API_URL, json=payload, timeout=60)
         if resp.status_code == 200:
-            return resp.json().get("score", 0.0)
-        return None
-    except Exception:
+            result = resp.json()
+            print(f"      📡 API 回傳: {result}")
+            return result
+        else:
+            print(f"      ⚠️ 評分 API 錯誤: {resp.status_code} - {resp.text[:100]}")
+            return None
+    except Exception as e:
+        print(f"      ⚠️ 評分 API 連線失敗: {e}")
         return None
 
 
@@ -120,11 +123,8 @@ def read_data_files(data_dir: str) -> dict:
 
 def read_questions(csv_path: str) -> list[dict]:
     """讀取 questions.csv"""
-    questions = []
     with open(csv_path, "r", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            questions.append(row)
-    return questions
+        return list(csv.DictReader(f))
 
 
 def build_csv(results: list[dict], output_path: str):
@@ -141,31 +141,20 @@ def build_csv(results: list[dict], output_path: str):
 # 三種切塊方法
 # ============================================================
 def fixed_size_chunking(text: str, source: str) -> list[dict]:
-    """
-    固定大小切塊 (Fixed-size Chunking)
-    - 純粹按字元數切割，不考慮語意邊界
-    - chunk_size=300, overlap=0
-    """
+    """固定大小切塊：chunk_size=300, overlap=0"""
     splitter = CharacterTextSplitter(
-        separator="",
-        chunk_size=FIXED_CHUNK_SIZE,
-        chunk_overlap=FIXED_CHUNK_OVERLAP,
-        length_function=len,
+        separator="", chunk_size=FIXED_CHUNK_SIZE,
+        chunk_overlap=FIXED_CHUNK_OVERLAP, length_function=len,
     )
     return [{"text": c, "source": source, "method": "固定大小"}
             for c in splitter.split_text(text)]
 
 
 def sliding_window_chunking(text: str, source: str) -> list[dict]:
-    """
-    滑動視窗切塊 (Sliding Window)
-    - 使用中文語意邊界分隔符
-    - chunk_size=300, overlap=100
-    """
+    """滑動視窗切塊：chunk_size=300, overlap=100"""
     splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", "。", "！", "？", "；", "，", ""],
-        chunk_size=SLIDING_CHUNK_SIZE,
-        chunk_overlap=SLIDING_CHUNK_OVERLAP,
+        chunk_size=SLIDING_CHUNK_SIZE, chunk_overlap=SLIDING_CHUNK_OVERLAP,
         length_function=len,
     )
     return [{"text": c, "source": source, "method": "滑動視窗"}
@@ -173,35 +162,24 @@ def sliding_window_chunking(text: str, source: str) -> list[dict]:
 
 
 def semantic_chunking(text: str, source: str) -> list[dict]:
-    """
-    語意切塊 (Semantic Chunking)
-    1. 按句子切分
-    2. 計算相鄰句子的 embedding 餘弦相似度
-    3. 在相似度低於門檻處斷開 → 語意段落
-    4. 過長段落再細切
-    """
-    # 按中文句號/換行切分成句子
+    """語意切塊：Embedding 相似度斷句"""
     sentences = re.split(r'(?<=[。！？\n])', text)
     sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]
 
     if len(sentences) <= 2:
         return [{"text": text.strip(), "source": source, "method": "語意切塊"}]
 
-    # 分批取得 embedding
     all_embs = []
     for i in range(0, len(sentences), 50):
         batch = sentences[i:i + 50]
         embs, _ = get_embedding(batch)
         if embs is None:
-            print(f"    ⚠️ embedding 失敗，改用滑動視窗")
             return sliding_window_chunking(text, source)
         all_embs.extend(embs)
         time.sleep(0.2)
 
-    # 計算相鄰句子相似度 → 找斷點
     chunks_text = []
     current = [sentences[0]]
-
     for i in range(len(all_embs) - 1):
         sim = cosine_similarity(all_embs[i], all_embs[i + 1])
         if sim < SEMANTIC_SIMILARITY_THRESHOLD:
@@ -211,13 +189,11 @@ def semantic_chunking(text: str, source: str) -> list[dict]:
             current = [sentences[i + 1]]
         else:
             current.append(sentences[i + 1])
-
     if current:
         chunk = "".join(current).strip()
         if chunk:
             chunks_text.append(chunk)
 
-    # 太長的 chunk 再細切
     final = []
     for c in chunks_text:
         if len(c) > 500:
@@ -265,7 +241,7 @@ def build_collection(client: QdrantClient, name: str,
 
 
 def search_top1(client: QdrantClient, collection: str, query: str) -> dict:
-    """搜尋 Top-1 最相似切塊"""
+    """搜尋 Top-1"""
     emb, _ = get_embedding([query])
     if emb is None:
         return {"text": "", "source": "", "score": 0.0}
@@ -307,7 +283,6 @@ def main():
 
     for filename, content in data_files.items():
         print(f"\n  📄 {filename}")
-
         fc = fixed_size_chunking(content, filename)
         all_chunks["固定大小"].extend(fc)
         print(f"     固定大小：{len(fc)} 塊")
@@ -329,7 +304,7 @@ def main():
 
     _, dim = get_embedding(["測試"])
     if dim is None:
-        print("❌ Embedding API 不可用，請確認 API 連線")
+        print("❌ Embedding API 不可用")
         return
     print(f"  向量維度：{dim}")
 
@@ -350,12 +325,11 @@ def main():
         build_collection(client, col_name, all_chunks[method], dim)
 
     # ── 5. 檢索 & 評分 ──
-    print(f"\n🔍 步驟 5：檢索 20 題 × 3 方法 = 60 筆")
+    print(f"\n🔍 步驟 5：檢索 {len(questions)} 題 × 3 方法")
     print("-" * 40)
 
     results = []
     row_id = 1
-    score_api_available = None  # 第一次嘗試後記住
 
     for q in questions:
         q_id = q["q_id"]
@@ -365,18 +339,13 @@ def main():
         for method, col_name in collection_map.items():
             hit = search_top1(client, col_name, q_text)
 
-            # 嘗試評分 API（只在第一次嘗試）
-            if score_api_available is None:
-                api_score = get_score_from_api(q_text, hit["text"], hit["source"])
-                score_api_available = (api_score is not None)
-                if score_api_available:
-                    print("  📡 評分 API 可用！")
-                else:
-                    print("  ⚠️ 評分 API 不可用，改用向量相似度分數")
-                score = api_score if score_api_available else hit["score"]
-            elif score_api_available:
-                score = get_score_from_api(q_text, hit["text"], hit["source"]) or hit["score"]
+            # 使用評分 API 提交 retrieve_text 作為答案
+            api_result = submit_answer(q_id, hit["text"])
+
+            if api_result and "score" in api_result:
+                score = api_result["score"]
             else:
+                # API 不可用時用向量相似度
                 score = hit["score"]
 
             results.append({
@@ -384,13 +353,13 @@ def main():
                 "q_id": q_id,
                 "method": method,
                 "retrieve_text": hit["text"],
-                "score": round(score, 6),
+                "score": round(score, 6) if isinstance(score, float) else score,
                 "source": hit["source"],
             })
-            print(f"      {method}: {score:.4f} | {hit['source']}")
+            print(f"      {method}: score={score} | {hit['source']}")
             row_id += 1
 
-        time.sleep(0.2)
+        time.sleep(0.3)
 
     # ── 6. 輸出 CSV ──
     print(f"\n{'=' * 60}")
@@ -400,13 +369,13 @@ def main():
     csv_path = os.path.join(SCRIPT_DIR, f"{STUDENT_ID}_RAG_HW_01.csv")
     build_csv(results, csv_path)
 
-    # ── 7. 統計分析 ──
+    # ── 7. 統計 ──
     print(f"\n📊 各方法平均分數")
     print("-" * 40)
 
     best_avg, best_method = 0, ""
     for method in collection_map:
-        scores = [r["score"] for r in results if r["method"] == method]
+        scores = [float(r["score"]) for r in results if r["method"] == method]
         avg = sum(scores) / len(scores) if scores else 0
         print(f"  {method}：平均 {avg:.6f}")
         if avg > best_avg:
@@ -430,7 +399,6 @@ def main():
   語意切塊：{len(all_chunks['語意切塊'])} 塊
 
 📁 輸出：{csv_path}（{len(results)} 筆）
-
 """)
 
 
