@@ -1,0 +1,9 @@
+{
+  "21": {
+    "Faithfulness": 1.0,
+    "Answer_Relevancy": 1.0,
+    "Contextual_Recall": 1.0,
+    "Contextual_Precision": 0.5,
+    "Contextual_Relevancy": 0.7143
+  }
+}
